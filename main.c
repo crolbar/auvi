@@ -15,9 +15,13 @@
 
 struct auvi
 {
-    int amplitude;
+    // sample amplitude scalar
+    int amp_scalar;
+
     int avg_mode;
     int avg_size;
+
+    // percentage of decay of amplitude in each frame
     int decay;
 
     float fft[BUFFER_SIZE];
@@ -120,27 +124,30 @@ setNormalization(auvi* a, float offset, float scale)
 void
 apply_fft(auvi* a, unsigned char sample_buf[BUFFER_SIZE])
 {
-    float fft_tmp[BUFFER_SIZE * 2];
+    // tmp storage of fft on samples
+    float fft_tmp[BUFFER_SIZE];
 
+    // since the samples are u8 values, we shift them by 256/2 to the left
+    // so we get a 0 when there is no sound at that time, instead of a 128
+    //
+    // and also scale the amps a bit for better visualization
+    int shift = (float)(256.0f / 2);
     for (int i = 0; i < BUFFER_SIZE; i++) {
-        // Clear the buffers
-        fft_tmp[i] = 0;
-
-        // Decay previous values
-        a->fft[i] = a->fft[i] * (((float)a->decay) / 100.0f);
+        fft_tmp[i] = (sample_buf[i] - shift) * ((float)a->amp_scalar / shift);
     }
 
-    for (int i = 0; i < BUFFER_SIZE * 2; i++) {
-        fft_tmp[i] = (sample_buf[i / 2] - ((float)BUFFER_SIZE / 2.0)) *
-                     (a->amplitude / ((float)BUFFER_SIZE / 2.0));
-    }
+    // run the fft
+    rfft(fft_tmp, BUFFER_SIZE / 2, 1);
 
-    // Run the FFT calculation
-    rfft(fft_tmp, BUFFER_SIZE, 1);
-
+    // remove dc component
     fft_tmp[0] = fft_tmp[2];
 
     apply_window(fft_tmp, a->fft_nrml, BUFFER_SIZE);
+
+    // fade out previous amps
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+        a->fft[i] = a->fft[i] * (((float)a->decay) / 100.0f);
+    }
 
     // Compute FFT magnitude
     for (int i = 0; i < BUFFER_SIZE / 2; i += 2) {
@@ -290,7 +297,7 @@ main()
     a.devices = NULL;
     a.devices_size = 0;
     a.device_idx = 1;
-    a.amplitude = 5000;
+    a.amp_scalar = 5000;
     a.avg_mode = 1;
     a.avg_size = 8;
     a.decay = 80;

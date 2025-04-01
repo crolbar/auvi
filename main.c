@@ -19,11 +19,9 @@ struct auvi
     int avg_mode;
     int avg_size;
     int decay;
-    float filter_constant;
 
     float fft[BUFFER_SIZE];
     float fft_nrml[BUFFER_SIZE];
-    float fft_fltr[BUFFER_SIZE];
 
     ALCdevice* device;
     int device_idx;
@@ -110,7 +108,6 @@ void
 setNormalization(auvi* a, float offset, float scale)
 {
     for (int i = 0; i < BUFFER_SIZE; i++) {
-        a->fft[i] = 0.0f;
         a->fft_nrml[i] = offset + (scale * (i / (float)BUFFER_SIZE));
     }
 }
@@ -231,11 +228,6 @@ apply_fft(auvi* a, unsigned char sample_buf[BUFFER_SIZE])
             a->fft[i] = sum / (2 * a->avg_size + 1);
         }
     }
-
-    for (int i = 0; i < BUFFER_SIZE; i++) {
-        a->fft_fltr[i] =
-          a->fft_fltr[i] + (a->filter_constant * (a->fft[i] - a->fft_fltr[i]));
-    }
 }
 
 void
@@ -301,8 +293,11 @@ main()
     a.amplitude = 5000;
     a.avg_mode = 1;
     a.avg_size = 8;
-    a.filter_constant = 1.0f;
     a.decay = 80;
+
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+        a.fft[i] = 0.0f;
+    }
 
     init_devices(&a);
     if (a.devices_size == 0) {

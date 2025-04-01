@@ -1,7 +1,7 @@
-#include <raylib.h>
 #include "chuck_fft.h"
 #include "string.h"
 #include <math.h>
+#include <raylib.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,7 +220,7 @@ apply_fft(auvi* a, unsigned char sample_buf[BUFFER_SIZE])
             a->fft[i] = sum1 / j;
             a->fft[BUFFER_SIZE - 1 - i] = sum2 / j;
         }
-        for (int i = a->avg_size; i < BUFFER_SIZE - 1 - a->avg_size; i++) {
+        for (int i = a->avg_size; i < BUFFER_SIZE - a->avg_size; i++) {
             float sum = 0;
             for (int j = 1; j <= a->avg_size; j++) {
                 sum += a->fft[i - j];

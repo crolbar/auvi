@@ -13,13 +13,42 @@
 #define SAMPLE_RATE 10000
 #define BUFFER_SIZE 256 // 256 // 512 // 1024 // Number of samples
 
-struct auvi
+typedef enum avg_type
+{
+    // groups the frequencies as avg_size blocks
+    // as the amp being the avg value of the frequencies
+    // in that block
+    Block,
+
+    // smooths out amps as it takes the average value
+    // of the neighboring frequencies amps and makes it
+    // the result value of each frequency
+    BoxFilter,
+
+    // runs box filter twice
+    DoubleBoxFilter,
+
+    // box filter, the only difference being that
+    // more distant frequencies from each frequency
+    // contribute less to the avarage
+    WeightedFilter,
+
+    // smooths out the fft as it uses the `alpha` value
+    // to control how much the neighboring (left/right)
+    // frequencies contribute to the smoothing
+    ExponentialFilter
+} avg_type;
+
+typedef struct auvi
 {
     // sample amplitude scalar
     int amp_scalar;
 
-    int avg_mode;
+    avg_type avg_mode;
+    // block size, box / weighted filter range
     int avg_size;
+    // used in ExponentialFilter
+    float alpha;
 
     // percentage of decay of amplitude in each frame
     int decay;
@@ -34,7 +63,7 @@ struct auvi
     size_t devices_size;
 
     int gui;
-} typedef auvi;
+} auvi;
 
 volatile __sig_atomic_t keep_running = 1;
 
@@ -122,6 +151,113 @@ setNormalization(auvi* a, float offset, float scale)
 //
 //
 void
+apply_exponential_smoothing(float (*fft)[BUFFER_SIZE], float alpha)
+{
+    float tmp[BUFFER_SIZE];
+
+    tmp[0] = (*fft)[0];
+    for (int i = 1; i < BUFFER_SIZE; i++) {
+        tmp[i] = alpha * (*fft)[i] + (1.0f - alpha) * tmp[i - 1];
+    }
+
+    (*fft)[BUFFER_SIZE - 1] = tmp[BUFFER_SIZE - 1];
+    for (int i = BUFFER_SIZE - 2; i >= 0; i--) {
+        (*fft)[i] = alpha * tmp[i] + (1.0f - alpha) * (*fft)[i + 1];
+    }
+}
+
+void
+apply_weighted_avg(float (*fft)[BUFFER_SIZE], int avg_size)
+{
+    float tmp[BUFFER_SIZE];
+
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+        float sum = 0;
+        float weight_sum = 0;
+
+        int start = max(i - avg_size, 0);
+        int end = min(i + avg_size, BUFFER_SIZE - 1);
+        for (int j = start; j <= end; j++) {
+            // decreases the influence/contribution of more distant neighbors to
+            // the ith frequency
+            //
+            // for example the value at j = i has weight of 1 (full
+            // contribution) when j = start or j = end the weight is 0
+            float weight = 1.0f - (float)abs(i - j) / avg_size;
+
+            sum += (*fft)[j] * weight;
+            weight_sum += weight;
+        }
+
+        tmp[i] = sum / weight_sum;
+    }
+
+    memcpy(fft, tmp, sizeof(tmp));
+}
+
+void
+apply_box_filter(float (*fft)[BUFFER_SIZE], int avg_size)
+{
+    float tmp[BUFFER_SIZE];
+
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+        float sum = 0;
+
+        int start = max(i - avg_size, 0);
+        int end = min(i + avg_size, BUFFER_SIZE - 1);
+        for (int j = start; j <= end; j++) {
+            sum += (*fft)[j];
+        }
+
+        float avg = sum / ((end - start) + 1);
+
+        tmp[i] = avg;
+    }
+
+    memcpy(fft, tmp, sizeof(tmp));
+}
+
+void
+apply_block_avg(float (*fft)[BUFFER_SIZE], int avg_size)
+{
+    for (int i = 0; i < BUFFER_SIZE; i += avg_size) {
+        float sum = 0;
+        for (int j = i; j < min(i + avg_size, BUFFER_SIZE); j++) {
+            sum += (*fft)[j];
+        }
+
+        float avg = sum / avg_size;
+
+        for (int j = i; j < min(i + avg_size, BUFFER_SIZE); j++) {
+            (*fft)[j] = avg;
+        }
+    }
+}
+
+void
+avg_fft(auvi* a)
+{
+    switch (a->avg_mode) {
+        case Block:
+            apply_block_avg(&a->fft, a->avg_size);
+            break;
+        case BoxFilter:
+            apply_box_filter(&a->fft, a->avg_size);
+            break;
+        case DoubleBoxFilter:
+            apply_box_filter(&a->fft, a->avg_size);
+            apply_box_filter(&a->fft, a->avg_size);
+            break;
+        case WeightedFilter:
+            apply_weighted_avg(&a->fft, a->avg_size);
+            break;
+        case ExponentialFilter:
+            apply_exponential_smoothing(&a->fft, a->alpha);
+            break;
+    }
+}
+
+void
 apply_fft(auvi* a, unsigned char sample_buf[BUFFER_SIZE])
 {
     // tmp storage of fft on samples
@@ -184,57 +320,8 @@ apply_fft(auvi* a, unsigned char sample_buf[BUFFER_SIZE])
         a->fft[(i * 2) + 3] = a->fft[i * 2];
     }
 
-    if (a->avg_mode == 0) {
-        // Apply averaging over given number of values
-        int k;
-        float sum1 = 0;
-        float sum2 = 0;
-        for (k = 0; k < a->avg_size; k++) {
-            sum1 += a->fft[k];
-            sum2 += a->fft[BUFFER_SIZE - 1 - k];
-        }
-        // Compute averages for end bars
-        sum1 = sum1 / k;
-        sum2 = sum2 / k;
-        for (k = 0; k < a->avg_size; k++) {
-            a->fft[k] = sum1;
-            a->fft[BUFFER_SIZE - 1 - k] = sum2;
-        }
-        for (int i = 0; i < (BUFFER_SIZE - a->avg_size); i += a->avg_size) {
-            float sum = 0;
-            for (int j = 0; j < a->avg_size; j += 1) {
-                sum += a->fft[i + j];
-            }
-
-            float avg = sum / a->avg_size;
-
-            for (int j = 0; j < a->avg_size; j += 1) {
-                a->fft[i + j] = avg;
-            }
-        }
-    } else if (a->avg_mode == 1) {
-        for (int i = 0; i < a->avg_size; i++) {
-            float sum1 = 0;
-            float sum2 = 0;
-            int j;
-            for (j = 0; j <= i + a->avg_size; j++) {
-                sum1 += a->fft[j];
-                sum2 += a->fft[BUFFER_SIZE - 1 - j];
-            }
-            a->fft[i] = sum1 / j;
-            a->fft[BUFFER_SIZE - 1 - i] = sum2 / j;
-        }
-        for (int i = a->avg_size; i < BUFFER_SIZE - a->avg_size; i++) {
-            float sum = 0;
-            for (int j = 1; j <= a->avg_size; j++) {
-                sum += a->fft[i - j];
-                sum += a->fft[i + j];
-            }
-            sum += a->fft[i];
-
-            a->fft[i] = sum / (2 * a->avg_size + 1);
-        }
-    }
+    // apply an averaging filter
+    avg_fft(a);
 }
 
 void
@@ -298,8 +385,9 @@ main()
     a.devices_size = 0;
     a.device_idx = 1;
     a.amp_scalar = 5000;
-    a.avg_mode = 1;
+    a.avg_mode = DoubleBoxFilter;
     a.avg_size = 8;
+    a.alpha = 0.2;
     a.decay = 80;
 
     for (int i = 0; i < BUFFER_SIZE; i++) {

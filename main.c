@@ -54,7 +54,6 @@ typedef struct auvi
     int decay;
 
     float fft[BUFFER_SIZE];
-    float fft_nrml[BUFFER_SIZE];
 
     ALCdevice* device;
     int device_idx;
@@ -83,6 +82,30 @@ max(int x, int y)
         return y;
     }
     return x;
+}
+
+float
+minf(float x, float y)
+{
+    if (x > y) {
+        return y;
+    }
+    return x;
+}
+
+float
+maxf(float x, float y)
+{
+    if (x < y) {
+        return y;
+    }
+    return x;
+}
+
+float
+clamp(float v, float low, float hight)
+{
+    return minf(hight, maxf(low, v));
 }
 
 void
@@ -137,19 +160,6 @@ init_device(auvi* a)
     a->device = device;
 }
 
-void
-setNormalization(auvi* a, float offset, float scale)
-{
-    for (int i = 0; i < BUFFER_SIZE; i++) {
-        a->fft_nrml[i] = offset + (scale * (i / (float)BUFFER_SIZE));
-    }
-}
-
-//
-//
-// BORROWED FROM KeyboardVisualizer
-//
-//
 void
 apply_exponential_smoothing(float (*fft)[BUFFER_SIZE], float alpha)
 {
@@ -278,43 +288,39 @@ apply_fft(auvi* a, unsigned char sample_buf[BUFFER_SIZE])
     // remove dc component
     fft_tmp[0] = fft_tmp[2];
 
-    apply_window(fft_tmp, a->fft_nrml, BUFFER_SIZE);
-
-    // fade out previous amps
+    // scale down the whole result as we scale down the lower
+    // frequencies more than the higher ones to fix spectral leakage a bit
     for (int i = 0; i < BUFFER_SIZE; i++) {
-        a->fft[i] = a->fft[i] * (((float)a->decay) / 100.0f);
+        fft_tmp[i] *= 0.04f + (0.5f * (i / (float)BUFFER_SIZE));
     }
 
-    // Compute FFT magnitude
+    // iterating over N/2 because rfft returns only the positive half
     for (int i = 0; i < BUFFER_SIZE / 2; i += 2) {
-        float fftmag;
+        complex c = (complex){ fft_tmp[i], fft_tmp[i + 1] };
+        float mag = cmp_abs(c);
 
-        // Compute magnitude from real and imaginary components of FFT and apply
-        // simple LPF
-        fftmag = (float)sqrt((fft_tmp[i] * fft_tmp[i]) +
-                             (fft_tmp[i + 1] * fft_tmp[i + 1]));
+        // remove noise from low mags
+        mag = (0.7f * log10(1.1f * mag)) + (0.7f * mag);
 
-        // Apply a slight logarithmic filter to minimize noise from very low
-        // amplitude frequencies
-        fftmag = (0.5f * log10(1.1f * fftmag)) + (0.9f * fftmag);
+        // clamp the mag between 0 and 1
+        mag = clamp(mag, 0.0f, 1.0f);
 
-        // Limit FFT magnitude to 1.0
-        if (fftmag > 1.0f) {
-            fftmag = 1.0f;
+        float prevmag = a->fft[i * 2];
+
+        // update if mag is greater than the prev mag
+        // we are leaving decline to the decay/fade out effect
+        if (mag > prevmag) {
+            a->fft[i * 2] = mag;
         }
 
-        // Update to new values only if greater than previous values
-        if (fftmag > a->fft[i * 2]) {
-            a->fft[i * 2] = fftmag;
+        // fade out declining magnitudes
+        if (mag < prevmag) {
+            a->fft[i * 2] = prevmag * (((float)a->decay) / 100.0f);
         }
 
-        // Prevent from going negative
-        if (a->fft[i * 2] < 0.0f) {
-            a->fft[i * 2] = 0.0f;
-        }
-
-        // Set odd indexes to match their corresponding even index, as the FFT
-        // input array uses two indices for one value (real+imaginary)
+        // as the result fft from rfft is N/2
+        // and half of the result again is imaginary numbers
+        // we make bins of 4 values that are equal
         a->fft[(i * 2) + 1] = a->fft[i * 2];
         a->fft[(i * 2) + 2] = a->fft[i * 2];
         a->fft[(i * 2) + 3] = a->fft[i * 2];
@@ -408,10 +414,6 @@ main()
         return 1;
     }
     printf("using device: %s\n", a.devices[a.device_idx]);
-
-    float nrml_ofst = 0.04f;
-    float nrml_scl = 0.5f;
-    setNormalization(&a, nrml_ofst, nrml_scl);
 
     if (a.gui) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE);

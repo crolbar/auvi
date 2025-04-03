@@ -3,7 +3,7 @@
 CC = gcc
 LDFLAGS = -lopenal -lraylib -lm
 
-SRC = main.c chuck_fft.c input_box.c
+SRC = main.c chuck_fft.c input_box.c button.c
 OUT = auvi
 
 all:

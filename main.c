@@ -1,3 +1,4 @@
+#include "button.h"
 #include "chuck_fft.h"
 #include "input_box.h"
 #include "raylib.h"
@@ -15,9 +16,9 @@
 #define SAMPLE_RATE 10000
 #define BUFFER_SIZE 256 // Number of samples
 
-typedef enum avg_type
+typedef enum filter_type
 {
-    // groups the frequencies as avg_size blocks
+    // groups the frequencies as filter_range blocks
     // as the amp being the avg value of the frequencies
     // in that block
     Block = 1,
@@ -39,7 +40,7 @@ typedef enum avg_type
     // to control how much the neighboring (left/right)
     // frequencies contribute to the smoothing
     ExponentialFilter = 5
-} avg_type;
+} filter_type;
 
 typedef struct auvi
 {
@@ -47,12 +48,16 @@ typedef struct auvi
     int amp_scalar;
     input_box ib_amp_scalar;
 
-    avg_type avg_mode;
-    input_box ib_avg_mode;
+    filter_type filter_mode;
+    button b_filter_mode_block;
+    button b_filter_mode_box_filter;
+    button b_filter_mode_double_box_filter;
+    button b_filter_mode_weighted_filter;
+    button b_filter_mode_exponential_filter;
 
     // block size, box / weighted filter range
-    int avg_size;
-    input_box ib_avg_size;
+    int filter_range;
+    input_box ib_filter_range;
 
     // used in ExponentialFilter
     float alpha;
@@ -66,10 +71,10 @@ typedef struct auvi
 
     ALCdevice* device;
     int device_idx;
-    input_box ib_device_idx;
 
     char** devices;
     size_t devices_size;
+    button* b_devices;
 
     int debug_menu;
     int settings_menu;
@@ -172,6 +177,22 @@ init_device(auvi* a)
     a->device = device;
 }
 
+int
+reinit_device(auvi* a)
+{
+    alcCaptureStop(a->device);
+    alcCaptureCloseDevice(a->device);
+    a->device = NULL;
+
+    init_device(a);
+    if (a->device == NULL) {
+        printf("could not init device capture\n");
+        return 1;
+    }
+
+    return 0;
+}
+
 void
 apply_exponential_smoothing(float (*fft)[BUFFER_SIZE], float alpha)
 {
@@ -189,7 +210,7 @@ apply_exponential_smoothing(float (*fft)[BUFFER_SIZE], float alpha)
 }
 
 void
-apply_weighted_avg(float (*fft)[BUFFER_SIZE], int avg_size)
+apply_weighted_filter(float (*fft)[BUFFER_SIZE], int filter_range)
 {
     float tmp[BUFFER_SIZE];
 
@@ -197,15 +218,15 @@ apply_weighted_avg(float (*fft)[BUFFER_SIZE], int avg_size)
         float sum = 0;
         float weight_sum = 0;
 
-        int start = max(i - avg_size, 0);
-        int end = min(i + avg_size, BUFFER_SIZE - 1);
+        int start = max(i - filter_range, 0);
+        int end = min(i + filter_range, BUFFER_SIZE - 1);
         for (int j = start; j <= end; j++) {
             // decreases the influence/contribution of more distant neighbors to
             // the ith frequency
             //
             // for example the value at j = i has weight of 1 (full
             // contribution) when j = start or j = end the weight is 0
-            float weight = 1.0f - (float)abs(i - j) / avg_size;
+            float weight = 1.0f - (float)abs(i - j) / filter_range;
 
             sum += (*fft)[j] * weight;
             weight_sum += weight;
@@ -218,15 +239,15 @@ apply_weighted_avg(float (*fft)[BUFFER_SIZE], int avg_size)
 }
 
 void
-apply_box_filter(float (*fft)[BUFFER_SIZE], int avg_size)
+apply_box_filter(float (*fft)[BUFFER_SIZE], int filter_range)
 {
     float tmp[BUFFER_SIZE];
 
     for (int i = 0; i < BUFFER_SIZE; i++) {
         float sum = 0;
 
-        int start = max(i - avg_size, 0);
-        int end = min(i + avg_size, BUFFER_SIZE - 1);
+        int start = max(i - filter_range, 0);
+        int end = min(i + filter_range, BUFFER_SIZE - 1);
         for (int j = start; j <= end; j++) {
             sum += (*fft)[j];
         }
@@ -240,41 +261,41 @@ apply_box_filter(float (*fft)[BUFFER_SIZE], int avg_size)
 }
 
 void
-apply_block_avg(float (*fft)[BUFFER_SIZE], int avg_size)
+apply_block_filter(float (*fft)[BUFFER_SIZE], int filter_range)
 {
-    if (avg_size == 0)
+    if (filter_range == 0)
         return;
 
-    for (int i = 0; i < BUFFER_SIZE; i += avg_size) {
+    for (int i = 0; i < BUFFER_SIZE; i += filter_range) {
         float sum = 0;
-        for (int j = i; j < min(i + avg_size, BUFFER_SIZE); j++) {
+        for (int j = i; j < min(i + filter_range, BUFFER_SIZE); j++) {
             sum += (*fft)[j];
         }
 
-        float avg = sum / avg_size;
+        float avg = sum / filter_range;
 
-        for (int j = i; j < min(i + avg_size, BUFFER_SIZE); j++) {
+        for (int j = i; j < min(i + filter_range, BUFFER_SIZE); j++) {
             (*fft)[j] = avg;
         }
     }
 }
 
 void
-avg_fft(auvi* a)
+filter_fft(auvi* a)
 {
-    switch (a->avg_mode) {
+    switch (a->filter_mode) {
         case Block:
-            apply_block_avg(&a->fft, a->avg_size);
+            apply_block_filter(&a->fft, a->filter_range);
             break;
         case BoxFilter:
-            apply_box_filter(&a->fft, a->avg_size);
+            apply_box_filter(&a->fft, a->filter_range);
             break;
         case DoubleBoxFilter:
-            apply_box_filter(&a->fft, a->avg_size);
-            apply_box_filter(&a->fft, a->avg_size);
+            apply_box_filter(&a->fft, a->filter_range);
+            apply_box_filter(&a->fft, a->filter_range);
             break;
         case WeightedFilter:
-            apply_weighted_avg(&a->fft, a->avg_size);
+            apply_weighted_filter(&a->fft, a->filter_range);
             break;
         case ExponentialFilter:
             apply_exponential_smoothing(&a->fft, a->alpha);
@@ -342,7 +363,7 @@ apply_fft(auvi* a, unsigned char sample_buf[BUFFER_SIZE])
     }
 
     // apply an averaging filter
-    avg_fft(a);
+    filter_fft(a);
 }
 
 void
@@ -393,6 +414,19 @@ drawVisualizer(auvi* a)
 }
 
 void
+init_devices_buttons(auvi* a)
+{
+    a->b_devices = malloc(a->devices_size * sizeof(struct button));
+
+    for (int i = 0; i < a->devices_size; i++) {
+        a->b_devices[i] = b_init(a->devices[i],
+                                 15 * 3 + (100 * 2),
+                                 35 * (i + 1),
+                                 (int)(a->device_idx == i));
+    }
+}
+
+void
 drawDebugMenu(auvi* a)
 {
     int w = GetScreenWidth();
@@ -420,61 +454,160 @@ drawDebugMenu(auvi* a)
     sprintf(s, "decay: %d%%", a->decay);
     DrawText(s, 5, h - 120, 20, LIME);
 
-    sprintf(s, "avg_size: %d", a->avg_size);
+    sprintf(s, "filter_range: %d", a->filter_range);
     DrawText(s, 5, h - 140, 20, LIME);
 
-    sprintf(s, "avg_mode: %d", (int)a->avg_mode);
+    sprintf(s, "filter_mode: %d", (int)a->filter_mode);
     DrawText(s, 5, h - 160, 20, LIME);
 
     free(s);
 }
 
 int
+handle_settings_menu_keys(auvi* a, button* filter_mode_buttons[5])
+{
+    int key = GetKeyPressed();
+
+    while (key > 0) {
+        switch (key) {
+            case KEY_RIGHT:
+                if (a->device_idx == a->devices_size - 1) {
+                    a->device_idx = 0;
+
+                    a->b_devices[a->devices_size - 1].pressed = false;
+                    a->b_devices[0].pressed = true;
+
+                    if (reinit_device(a))
+                        return 1;
+                } else {
+                    a->b_devices[a->device_idx].pressed = false;
+                    a->device_idx++;
+                    a->b_devices[a->device_idx].pressed = true;
+
+                    if (reinit_device(a))
+                        return 1;
+                }
+                break;
+            case KEY_LEFT:
+                if (a->device_idx == 0) {
+                    a->device_idx = a->devices_size - 1;
+
+                    a->b_devices[0].pressed = false;
+                    a->b_devices[a->devices_size - 1].pressed = true;
+
+                    if (reinit_device(a))
+                        return 1;
+                } else {
+                    a->b_devices[a->device_idx].pressed = false;
+
+                    a->device_idx--;
+                    a->b_devices[a->device_idx].pressed = true;
+
+                    if (reinit_device(a))
+                        return 1;
+                }
+                break;
+            case KEY_DOWN:
+                if ((int)a->filter_mode == 5) {
+                    a->b_filter_mode_exponential_filter.pressed = false;
+                    a->filter_mode = Block;
+                    a->b_filter_mode_block.pressed = true;
+                } else {
+                    filter_mode_buttons[a->filter_mode - 1]->pressed = false;
+                    a->filter_mode = (filter_type)(a->filter_mode + 1);
+                    filter_mode_buttons[a->filter_mode - 1]->pressed = true;
+                }
+                break;
+            case KEY_UP:
+                if ((int)a->filter_mode == 1) {
+                    a->b_filter_mode_block.pressed = false;
+                    a->filter_mode = ExponentialFilter;
+                    a->b_filter_mode_exponential_filter.pressed = true;
+                } else {
+                    filter_mode_buttons[a->filter_mode - 1]->pressed = false;
+                    a->filter_mode = (filter_type)(a->filter_mode - 1);
+                    filter_mode_buttons[a->filter_mode - 1]->pressed = true;
+                }
+                break;
+        }
+
+        key = GetKeyPressed();
+    }
+
+    return 0;
+}
+
+int
 handle_settings_menu(auvi* a)
 {
+    button* filter_mode_buttons[5] = {
+        &a->b_filter_mode_block,
+        &a->b_filter_mode_box_filter,
+        &a->b_filter_mode_double_box_filter,
+        &a->b_filter_mode_weighted_filter,
+        &a->b_filter_mode_exponential_filter,
+    };
+
     // check focus
     {
-        ib_check_focus(&a->ib_device_idx);
         ib_check_focus(&a->ib_amp_scalar);
-        ib_check_focus(&a->ib_avg_mode);
-        ib_check_focus(&a->ib_avg_size);
+        ib_check_focus(&a->ib_filter_range);
         ib_check_focus(&a->ib_alpha);
         ib_check_focus(&a->ib_decay);
     }
 
     // handle input
     {
-        if (ib_get_input(&a->ib_device_idx)) {
-            int new_device_idx = ib_get_text_as_integer(&a->ib_device_idx);
+        if (handle_settings_menu_keys(a, filter_mode_buttons))
+            return 1;
 
-            if (new_device_idx < a->devices_size) {
-                a->device_idx = new_device_idx;
+        // device buttons
+        {
+            for (int i = 0; i < a->devices_size; i++) {
+                // not pressed
+                if (!b_get_input(&a->b_devices[i]))
+                    continue;
 
-                alcCaptureStop(a->device);
-                alcCaptureCloseDevice(a->device);
-                a->device = NULL;
+                for (int j = 0; j < a->devices_size; j++)
+                    if (j != i)
+                        a->b_devices[j].pressed = false;
 
-                init_device(a);
-                if (a->device == NULL) {
-                    printf("could not init device capture\n");
+                a->device_idx = i;
+
+                if (reinit_device(a))
                     return 1;
-                }
             }
         }
+
         if (ib_get_input(&a->ib_amp_scalar))
             a->amp_scalar = ib_get_text_as_integer(&a->ib_amp_scalar);
 
-        if (ib_get_input(&a->ib_avg_mode))
-            a->avg_mode = (avg_type)ib_get_text_as_integer(&a->ib_avg_mode);
-
-        if (ib_get_input(&a->ib_avg_size))
-            a->avg_size = ib_get_text_as_integer(&a->ib_avg_size);
+        if (ib_get_input(&a->ib_filter_range))
+            a->filter_range = ib_get_text_as_integer(&a->ib_filter_range);
 
         if (ib_get_input(&a->ib_alpha))
             a->alpha = ib_get_text_as_float(&a->ib_alpha);
 
         if (ib_get_input(&a->ib_decay))
             a->decay = min(ib_get_text_as_integer(&a->ib_decay), 100);
+
+        // filter mode buttons
+        {
+            // mouse
+            for (int i = 0; i < 5; i++) {
+                // if not pressed
+                if (!b_get_input(filter_mode_buttons[i]))
+                    continue;
+
+                for (int j = 0; j < 5; j++)
+                    if (j != i)
+                        filter_mode_buttons[j]->pressed = false;
+
+                a->filter_mode = (filter_type)(i + 1);
+
+                break;
+            }
+        }
     }
 
     // draw
@@ -485,19 +618,33 @@ handle_settings_menu(auvi* a)
         // background rect
         {
             int off = 10;
-            DrawRectangle(off,
-                          off,
-                          w - (off * 2),
-                          off * 2 + ((35 * 3) + 5 * 2),
-                          (Color){ 33, 33, 33, 255 });
+            int height = off * 2 + ((35 * 3) + 5 * 2);
+            DrawRectangle(
+              off, off, w - (off * 2), height, (Color){ 33, 33, 33, 255 });
+
+            DrawRectangle(
+              off,
+              height + off,
+              off * 2 +
+                MeasureText(a->b_filter_mode_exponential_filter.label, 20) + 20,
+              (35 * 7) - height + 20,
+              (Color){ 33, 33, 33, 255 });
         }
 
-        ib_draw(&a->ib_device_idx);
         ib_draw(&a->ib_amp_scalar);
-        ib_draw(&a->ib_avg_mode);
-        ib_draw(&a->ib_avg_size);
+        ib_draw(&a->ib_filter_range);
         ib_draw(&a->ib_alpha);
         ib_draw(&a->ib_decay);
+
+        b_draw(&a->b_filter_mode_block);
+        b_draw(&a->b_filter_mode_box_filter);
+        b_draw(&a->b_filter_mode_double_box_filter);
+        b_draw(&a->b_filter_mode_weighted_filter);
+        b_draw(&a->b_filter_mode_exponential_filter);
+
+        for (int i = 0; i < a->devices_size; i++) {
+            b_draw(&a->b_devices[i]);
+        }
     }
 
     return 0;
@@ -515,18 +662,38 @@ main()
     a.device = NULL;
     a.devices = NULL;
     a.devices_size = 0;
-
     a.device_idx = 1;
-    a.ib_device_idx = ib_init("device idx", 15 * 3 + (100 * 2), 35, "1");
 
     a.amp_scalar = 5000;
     a.ib_amp_scalar = ib_init("amp scalar", 15, 35, "5000");
 
-    a.avg_mode = DoubleBoxFilter;
-    a.ib_avg_mode = ib_init("avg mode", 15, (35 * 2) + 5, "3");
+    a.filter_mode = DoubleBoxFilter;
 
-    a.avg_size = 8;
-    a.ib_avg_size = ib_init("avg size", 15, (35 * 3) + 5 * 2, "8");
+    // filter mode buttons
+    {
+        a.b_filter_mode_block =
+          b_init("block filter", 15, 35 * 3, (int)(a.filter_mode == Block));
+        a.b_filter_mode_box_filter =
+          b_init("box filter", 15, 35 * 4, (int)(a.filter_mode == BoxFilter));
+        a.b_filter_mode_double_box_filter =
+          b_init("double box filter",
+                 15,
+                 35 * 5,
+                 (int)(a.filter_mode == DoubleBoxFilter));
+        a.b_filter_mode_weighted_filter =
+          b_init("weighted filter",
+                 15,
+                 35 * 6,
+                 (int)(a.filter_mode == WeightedFilter));
+        a.b_filter_mode_exponential_filter =
+          b_init("exponential filter",
+                 15,
+                 35 * 7,
+                 (int)(a.filter_mode == ExponentialFilter));
+    }
+
+    a.filter_range = 8;
+    a.ib_filter_range = ib_init("fltr range", 15, (35 * 2) + 5, "8");
 
     a.alpha = 0.2;
     a.ib_alpha = ib_init("alpha", (15 * 2) + 100, 35, "0.2");
@@ -547,9 +714,8 @@ main()
         return 1;
     }
 
-    list_devices(&a);
-
     init_device(&a);
+    init_devices_buttons(&a);
     if (a.device == NULL) {
         printf("could not init device capture\n");
         return 1;
@@ -600,5 +766,6 @@ main()
     if (a.gui) {
         CloseWindow();
     }
+    free(a.b_devices);
     return 0;
 }

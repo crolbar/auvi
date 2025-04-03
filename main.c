@@ -1,4 +1,6 @@
 #include "chuck_fft.h"
+#include "input_box.h"
+#include "raylib.h"
 #include "string.h"
 #include <math.h>
 #include <raylib.h>
@@ -11,56 +13,66 @@
 #include "AL/alc.h"
 
 #define SAMPLE_RATE 10000
-#define BUFFER_SIZE 256 // 256 // 512 // 1024 // Number of samples
+#define BUFFER_SIZE 256 // Number of samples
 
 typedef enum avg_type
 {
     // groups the frequencies as avg_size blocks
     // as the amp being the avg value of the frequencies
     // in that block
-    Block,
+    Block = 1,
 
     // smooths out amps as it takes the average value
     // of the neighboring frequencies amps and makes it
     // the result value of each frequency
-    BoxFilter,
+    BoxFilter = 2,
 
     // runs box filter twice
-    DoubleBoxFilter,
+    DoubleBoxFilter = 3,
 
     // box filter, the only difference being that
     // more distant frequencies from each frequency
     // contribute less to the avarage
-    WeightedFilter,
+    WeightedFilter = 4,
 
     // smooths out the fft as it uses the `alpha` value
     // to control how much the neighboring (left/right)
     // frequencies contribute to the smoothing
-    ExponentialFilter
+    ExponentialFilter = 5
 } avg_type;
 
 typedef struct auvi
 {
     // sample amplitude scalar
     int amp_scalar;
+    input_box ib_amp_scalar;
 
     avg_type avg_mode;
+    input_box ib_avg_mode;
+
     // block size, box / weighted filter range
     int avg_size;
+    input_box ib_avg_size;
+
     // used in ExponentialFilter
     float alpha;
+    input_box ib_alpha;
 
     // percentage of decay of amplitude in each frame
     int decay;
+    input_box ib_decay;
 
     float fft[BUFFER_SIZE];
 
     ALCdevice* device;
     int device_idx;
+    input_box ib_device_idx;
 
     char** devices;
     size_t devices_size;
 
+    int debug_menu;
+    int settings_menu;
     int gui;
 } auvi;
 
@@ -230,6 +242,9 @@ apply_box_filter(float (*fft)[BUFFER_SIZE], int avg_size)
 void
 apply_block_avg(float (*fft)[BUFFER_SIZE], int avg_size)
 {
+    if (avg_size == 0)
+        return;
+
     for (int i = 0; i < BUFFER_SIZE; i += avg_size) {
         float sum = 0;
         for (int j = i; j < min(i + avg_size, BUFFER_SIZE); j++) {
@@ -377,6 +392,117 @@ drawVisualizer(auvi* a)
     }
 }
 
+void
+drawDebugMenu(auvi* a)
+{
+    int w = GetScreenWidth();
+    int h = GetScreenHeight();
+
+    char* s = malloc(20);
+    sprintf(s, "amp_scalar: %d", a->amp_scalar);
+
+    DrawRectangle(
+      0, h - 160, MeasureText(s, 20) + 10, 160, (Color){ 30, 30, 30, 255 });
+
+    DrawFPS(5, h - 20);
+
+    DrawText(s, 5, h - 40, 20, LIME);
+
+    sprintf(s, "devI: %d", a->device_idx);
+    DrawText(s, 5, h - 60, 20, LIME);
+
+    sprintf(s, "num_devices: %zu", a->devices_size);
+    DrawText(s, 5, h - 80, 20, LIME);
+
+    sprintf(s, "alpha: %f", a->alpha);
+    DrawText(s, 5, h - 100, 20, LIME);
+
+    sprintf(s, "decay: %d%%", a->decay);
+    DrawText(s, 5, h - 120, 20, LIME);
+
+    sprintf(s, "avg_size: %d", a->avg_size);
+    DrawText(s, 5, h - 140, 20, LIME);
+
+    sprintf(s, "avg_mode: %d", (int)a->avg_mode);
+    DrawText(s, 5, h - 160, 20, LIME);
+
+    free(s);
+}
+
+int
+handle_settings_menu(auvi* a)
+{
+    // check focus
+    {
+        ib_check_focus(&a->ib_device_idx);
+        ib_check_focus(&a->ib_amp_scalar);
+        ib_check_focus(&a->ib_avg_mode);
+        ib_check_focus(&a->ib_avg_size);
+        ib_check_focus(&a->ib_alpha);
+        ib_check_focus(&a->ib_decay);
+    }
+
+    // handle input
+    {
+        if (ib_get_input(&a->ib_device_idx)) {
+            int new_device_idx = ib_get_text_as_integer(&a->ib_device_idx);
+
+            if (new_device_idx < a->devices_size) {
+                a->device_idx = new_device_idx;
+
+                alcCaptureStop(a->device);
+                alcCaptureCloseDevice(a->device);
+                a->device = NULL;
+
+                init_device(a);
+                if (a->device == NULL) {
+                    printf("could not init device capture\n");
+                    return 1;
+                }
+            }
+        }
+        if (ib_get_input(&a->ib_amp_scalar))
+            a->amp_scalar = ib_get_text_as_integer(&a->ib_amp_scalar);
+
+        if (ib_get_input(&a->ib_avg_mode))
+            a->avg_mode = (avg_type)ib_get_text_as_integer(&a->ib_avg_mode);
+
+        if (ib_get_input(&a->ib_avg_size))
+            a->avg_size = ib_get_text_as_integer(&a->ib_avg_size);
+
+        if (ib_get_input(&a->ib_alpha))
+            a->alpha = ib_get_text_as_float(&a->ib_alpha);
+
+        if (ib_get_input(&a->ib_decay))
+            a->decay = min(ib_get_text_as_integer(&a->ib_decay), 100);
+    }
+
+    // draw
+    {
+        int w = GetScreenWidth();
+        int h = GetScreenHeight();
+
+        // background rect
+        {
+            int off = 10;
+            DrawRectangle(off,
+                          off,
+                          w - (off * 2),
+                          off * 2 + ((35 * 3) + 5 * 2),
+                          (Color){ 33, 33, 33, 255 });
+        }
+
+        ib_draw(&a->ib_device_idx);
+        ib_draw(&a->ib_amp_scalar);
+        ib_draw(&a->ib_avg_mode);
+        ib_draw(&a->ib_avg_size);
+        ib_draw(&a->ib_alpha);
+        ib_draw(&a->ib_decay);
+    }
+
+    return 0;
+}
+
 int
 main()
 {
@@ -389,12 +515,27 @@ main()
     a.device = NULL;
     a.devices = NULL;
     a.devices_size = 0;
+
     a.device_idx = 1;
+    a.ib_device_idx = ib_init("device idx", 15 * 3 + (100 * 2), 35, "1");
+
     a.amp_scalar = 5000;
+    a.ib_amp_scalar = ib_init("amp scalar", 15, 35, "5000");
+
     a.avg_mode = DoubleBoxFilter;
+    a.ib_avg_mode = ib_init("avg mode", 15, (35 * 2) + 5, "3");
+
     a.avg_size = 8;
+    a.ib_avg_size = ib_init("avg size", 15, (35 * 3) + 5 * 2, "8");
+
     a.alpha = 0.2;
+    a.ib_alpha = ib_init("alpha", (15 * 2) + 100, 35, "0.2");
+
     a.decay = 80;
+    a.ib_decay = ib_init("decay", (15 * 2) + 100, (35 * 2) + 5, "80");
+
+    a.settings_menu = 0;
+    a.debug_menu = 0;
 
     for (int i = 0; i < BUFFER_SIZE; i++) {
         a.fft[i] = 0.0f;
@@ -435,6 +576,21 @@ main()
         ClearBackground((Color){ 20, 20, 20, 255 });
 
         drawVisualizer(&a);
+
+        if (IsKeyPressed(KEY_F1)) {
+            a.settings_menu = !a.settings_menu;
+        }
+
+        if (IsKeyPressed(KEY_F2)) {
+            a.debug_menu = !a.debug_menu;
+        }
+
+        if (a.debug_menu)
+            drawDebugMenu(&a);
+
+        if (a.settings_menu)
+            if (handle_settings_menu(&a))
+                return 1;
 
         EndDrawing();
     }

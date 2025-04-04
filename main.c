@@ -2,7 +2,9 @@
 #include "chuck_fft.h"
 #include "input_box.h"
 #include "raylib.h"
+#include "slide_bar.h"
 #include "string.h"
+#include "util.h"
 #include <math.h>
 #include <raylib.h>
 #include <signal.h>
@@ -47,6 +49,8 @@ typedef struct auvi
     // sample amplitude scalar
     int amp_scalar;
     input_box ib_amp_scalar;
+    slide_bar sb_amp_scalar;
+    int sb_amp_scalar_max;
 
     filter_type filter_mode;
     button b_filter_mode_block;
@@ -82,48 +86,6 @@ typedef struct auvi
 } auvi;
 
 volatile __sig_atomic_t keep_running = 1;
-
-int
-min(int x, int y)
-{
-    if (x > y) {
-        return y;
-    }
-    return x;
-}
-
-int
-max(int x, int y)
-{
-    if (x < y) {
-        return y;
-    }
-    return x;
-}
-
-float
-minf(float x, float y)
-{
-    if (x > y) {
-        return y;
-    }
-    return x;
-}
-
-float
-maxf(float x, float y)
-{
-    if (x < y) {
-        return y;
-    }
-    return x;
-}
-
-float
-clamp(float v, float low, float hight)
-{
-    return minf(hight, maxf(low, v));
-}
 
 void
 handle_sigint(int sig)
@@ -339,7 +301,7 @@ apply_fft(auvi* a, unsigned char sample_buf[BUFFER_SIZE])
         mag = (0.7f * log10(1.1f * mag)) + (0.7f * mag);
 
         // clamp the mag between 0 and 1
-        mag = clamp(mag, 0.0f, 1.0f);
+        mag = clampf(mag, 0.0f, 1.0f);
 
         float prevmag = a->fft[i * 2];
 
@@ -421,7 +383,7 @@ init_devices_buttons(auvi* a)
     for (int i = 0; i < a->devices_size; i++) {
         a->b_devices[i] = b_init(a->devices[i],
                                  15 * 3 + (100 * 2),
-                                 35 * (i + 1),
+                                 35 * (i + 2),
                                  (int)(a->device_idx == i));
     }
 }
@@ -579,8 +541,28 @@ handle_settings_menu(auvi* a)
             }
         }
 
-        if (ib_get_input(&a->ib_amp_scalar))
-            a->amp_scalar = ib_get_text_as_integer(&a->ib_amp_scalar);
+        if (ib_get_input(&a->ib_amp_scalar)) {
+            int new_amp_scalar = ib_get_text_as_integer(&a->ib_amp_scalar);
+
+            a->amp_scalar = new_amp_scalar;
+
+            a->sb_amp_scalar.nob_x = clamp(
+              (15 + 10) +
+                (((float)new_amp_scalar / (float)a->sb_amp_scalar_max) * 500),
+              a->sb_amp_scalar.start_x,
+              a->sb_amp_scalar.end_x);
+        }
+
+        if (sb_get_input(&a->sb_amp_scalar)) {
+            int new_amp_scalar =
+              a->sb_amp_scalar_max * sb_get_ratio(&a->sb_amp_scalar);
+
+            a->amp_scalar = new_amp_scalar;
+
+            char s[20];
+            sprintf(s, "%d", new_amp_scalar);
+            strcpy(a->ib_amp_scalar.text, s);
+        }
 
         if (ib_get_input(&a->ib_filter_range))
             a->filter_range = ib_get_text_as_integer(&a->ib_filter_range);
@@ -618,7 +600,7 @@ handle_settings_menu(auvi* a)
         // background rect
         {
             int off = 10;
-            int height = off * 2 + ((35 * 3) + 5 * 2);
+            int height = off * 2 + ((35 * 4) + 5 * 2);
             DrawRectangle(
               off, off, w - (off * 2), height, (Color){ 33, 33, 33, 255 });
 
@@ -627,11 +609,12 @@ handle_settings_menu(auvi* a)
               height + off,
               off * 2 +
                 MeasureText(a->b_filter_mode_exponential_filter.label, 20) + 20,
-              (35 * 7) - height + 20,
+              (35 * 8) - height + 20,
               (Color){ 33, 33, 33, 255 });
         }
 
         ib_draw(&a->ib_amp_scalar);
+        sb_draw(&a->sb_amp_scalar);
         ib_draw(&a->ib_filter_range);
         ib_draw(&a->ib_alpha);
         ib_draw(&a->ib_decay);
@@ -665,41 +648,48 @@ main()
     a.device_idx = 1;
 
     a.amp_scalar = 5000;
-    a.ib_amp_scalar = ib_init("amp scalar", 15, 35, "5000");
+    a.ib_amp_scalar = ib_init("amp scalar", 15, 35 * 2, "5000");
+    a.sb_amp_scalar_max = 10000;
+    a.sb_amp_scalar = sb_init(
+      "amp scalar",
+      15 + 10,
+      15 + 10 + 500,
+      35,
+      (15 + 10) + (((float)a.amp_scalar / (float)a.sb_amp_scalar_max) * 500));
 
     a.filter_mode = DoubleBoxFilter;
 
     // filter mode buttons
     {
-        a.b_filter_mode_block =
-          b_init("block filter", 15, 35 * 3, (int)(a.filter_mode == Block));
-        a.b_filter_mode_box_filter =
-          b_init("box filter", 15, 35 * 4, (int)(a.filter_mode == BoxFilter));
+        a.b_filter_mode_block = b_init(
+          "block filter", 15, (35 * 4) + 5, (int)(a.filter_mode == Block));
+        a.b_filter_mode_box_filter = b_init(
+          "box filter", 15, (35 * 5) + 5, (int)(a.filter_mode == BoxFilter));
         a.b_filter_mode_double_box_filter =
           b_init("double box filter",
                  15,
-                 35 * 5,
+                 (35 * 6) + 5,
                  (int)(a.filter_mode == DoubleBoxFilter));
         a.b_filter_mode_weighted_filter =
           b_init("weighted filter",
                  15,
-                 35 * 6,
+                 (35 * 7) + 5,
                  (int)(a.filter_mode == WeightedFilter));
         a.b_filter_mode_exponential_filter =
           b_init("exponential filter",
                  15,
-                 35 * 7,
+                 (35 * 8) + 5,
                  (int)(a.filter_mode == ExponentialFilter));
     }
 
     a.filter_range = 8;
-    a.ib_filter_range = ib_init("fltr range", 15, (35 * 2) + 5, "8");
+    a.ib_filter_range = ib_init("fltr range", 15, 35 * 3, "8");
 
     a.alpha = 0.2;
-    a.ib_alpha = ib_init("alpha", (15 * 2) + 100, 35, "0.2");
+    a.ib_alpha = ib_init("alpha", (15 * 2) + 100, 35 * 2, "0.2");
 
     a.decay = 80;
-    a.ib_decay = ib_init("decay", (15 * 2) + 100, (35 * 2) + 5, "80");
+    a.ib_decay = ib_init("decay", (15 * 2) + 100, 35 * 3, "80");
 
     a.settings_menu = 0;
     a.debug_menu = 0;

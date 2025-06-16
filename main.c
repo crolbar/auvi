@@ -110,8 +110,8 @@ init_devices(auvi* a)
         devices += strlen(devices) + 1;
 
         if (a->devices_size <= idx) {
-            a->devices = realloc(a->devices, idx + 1 * sizeof(char*));
-            a->devices_size = a->devices_size + 1;
+            a->devices_size++;
+            a->devices = realloc(a->devices, a->devices_size * sizeof(char*));
         }
         a->devices[idx] = dev_name;
 
@@ -645,7 +645,7 @@ main()
     a.device = NULL;
     a.devices = NULL;
     a.devices_size = 0;
-    a.device_idx = 1;
+    a.device_idx = 0;
 
     a.amp_scalar = 5000;
     a.ib_amp_scalar = ib_init("amp scalar", 15, 35 * 2, "5000");
@@ -713,7 +713,7 @@ main()
     printf("using device: %s\n", a.devices[a.device_idx]);
 
     if (a.gui) {
-        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+        SetConfigFlags(FLAG_WINDOW_HIGHDPI | FLAG_WINDOW_RESIZABLE);
         InitWindow(500, 400, "auvi");
         SetTargetFPS(144);
     }
